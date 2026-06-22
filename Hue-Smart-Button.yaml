@@ -1,0 +1,184 @@
+blueprint:
+  name: Hue Smart Button Light Control
+  description: >
+    Control lights and a power source with a Hue Smart Button.
+
+    Tap: if anything (lights or power) is on, turns it all off.
+    Otherwise turns it all on.
+
+    Hold: dims brightness. Direction auto-reverses when it nears
+    0% or 100% (so a long hold bounces up and down), and also
+    flips whenever a hold ends, so the next hold starts the
+    other way.
+
+    Requires one `input_boolean` helper per button instance to
+    remember the last dim direction (Settings > Devices & Services
+    > Helpers > Create Helper > Toggle).
+  domain: automation
+  input:
+    remote:
+      name: Hue Smart Button
+      selector:
+        device:
+          integration: hue
+
+    target_lights:
+      name: Lights and Areas
+      default: {}
+      selector:
+        target:
+          entity:
+            domain:
+              - light
+
+    target_power:
+      name: Outlets and power
+      default: {}
+      selector:
+        target:
+          entity:
+            domain:
+              - light
+
+    brightness_step:
+      name: Brightness Step
+      default: 20
+      selector:
+        number:
+          min: 1
+          max: 50
+          step: 1
+
+    direction_helper:
+      name: Dim Direction Helper
+      description: >
+        An input_boolean helper used to remember which way to dim next.
+        Create one (e.g. input_boolean.button_kitchen_direction) and
+        select it here. One helper per button instance.
+      selector:
+        entity:
+          domain: input_boolean
+
+variables:
+  target_lights: !input target_lights
+  target_power: !input target_power
+  brightness_step: !input brightness_step
+  direction_helper: !input direction_helper
+  all_entities: >-
+    {% set ns = namespace(ents=[]) %}
+    {% for t in [target_lights, target_power] %}
+      {% if t.entity_id is defined %}
+        {% set ids = [t.entity_id] if t.entity_id is string else t.entity_id %}
+        {% set ns.ents = ns.ents + ids %}
+      {% endif %}
+      {% if t.area_id is defined %}
+        {% set areas = [t.area_id] if t.area_id is string else t.area_id %}
+        {% for a in areas %}
+          {% for e in area_entities(a) %}
+            {% if e.split('.')[0] == 'light' %}
+              {% set ns.ents = ns.ents + [e] %}
+            {% endif %}
+          {% endfor %}
+        {% endfor %}
+      {% endif %}
+      {% if t.device_id is defined %}
+        {% set devices = [t.device_id] if t.device_id is string else t.device_id %}
+        {% for d in devices %}
+          {% for e in device_entities(d) %}
+            {% if e.split('.')[0] == 'light' %}
+              {% set ns.ents = ns.ents + [e] %}
+            {% endif %}
+          {% endfor %}
+        {% endfor %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.ents | unique | list }}
+  any_on: "{{ all_entities | select('is_state', 'on') | list | count > 0 }}"
+  ref_entity: "{{ all_entities[0] if all_entities | count > 0 else none }}"
+  current_pct: >-
+    {{ ((state_attr(ref_entity, 'brightness') / 255 * 100) | round(0))
+       if (ref_entity and state_attr(ref_entity, 'brightness')) else 0 }}
+  will_overshoot_up: "{{ is_state(direction_helper, 'on') and current_pct >= (100 - brightness_step) }}"
+  will_overshoot_down: "{{ is_state(direction_helper, 'off') and current_pct <= brightness_step }}"
+
+trigger:
+  - platform: device
+    domain: hue
+    device_id: !input remote
+    type: short_release
+    id: "toggle"
+
+  - platform: device
+    domain: hue
+    device_id: !input remote
+    type: repeat
+    id: "dim"
+
+  - platform: device
+    domain: hue
+    device_id: !input remote
+    type: long_release
+    id: "release"
+
+action:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: "toggle"
+        sequence:
+          - if:
+              - condition: template
+                value_template: "{{ any_on }}"
+            then:
+              - if:
+                  - condition: template
+                    value_template: "{{ target_lights != {} }}"
+                then:
+                  - service: light.turn_off
+                    target: !input target_lights
+              - if:
+                  - condition: template
+                    value_template: "{{ target_power != {} }}"
+                then:
+                  - service: homeassistant.turn_off
+                    target: !input target_power
+            else:
+              - if:
+                  - condition: template
+                    value_template: "{{ target_lights != {} }}"
+                then:
+                  - service: light.turn_on
+                    target: !input target_lights
+              - if:
+                  - condition: template
+                    value_template: "{{ target_power != {} }}"
+                then:
+                  - service: homeassistant.turn_on
+                    target: !input target_power
+
+      - conditions:
+          - condition: trigger
+            id: "dim"
+        sequence:
+          - condition: template
+            value_template: "{{ target_lights != {} }}"
+          - if:
+              - condition: template
+                value_template: "{{ will_overshoot_up or will_overshoot_down }}"
+            then:
+              - service: input_boolean.toggle
+                target:
+                  entity_id: !input direction_helper
+          - service: light.turn_on
+            target: !input target_lights
+            data:
+              brightness_step_pct: >-
+                {{ brightness_step if is_state(direction_helper, 'on') else -brightness_step }}
+
+      - conditions:
+          - condition: trigger
+            id: "release"
+        sequence:
+          - service: input_boolean.toggle
+            target:
+              entity_id: !input direction_helper

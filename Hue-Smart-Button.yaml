@@ -42,7 +42,7 @@ blueprint:
 
     brightness_step:
       name: Brightness Step
-      default: 5
+      default: 20
       selector:
         number:
           min: 1

@@ -11,10 +11,10 @@ blueprint:
     target_light:
       name: Light(s) to auto-off
       selector:
-        target:
-          entity:
-            domain:
-              - light
+        entity:
+          domain:
+            - light
+          multiple: true
  
     auto_off_duration:
       name: Auto-off duration
@@ -24,43 +24,16 @@ blueprint:
       selector:
         duration: {}
  
-variables:
-  target_light: !input target_light
- 
 trigger:
   - platform: state
-    entity_id: >-
-      {% set ns = namespace(ents=[]) %}
-      {% if target_light.entity_id is defined %}
-        {% set ids = [target_light.entity_id] if target_light.entity_id is string else target_light.entity_id %}
-        {% set ns.ents = ns.ents + ids %}
-      {% endif %}
-      {% if target_light.area_id is defined %}
-        {% set areas = [target_light.area_id] if target_light.area_id is string else target_light.area_id %}
-        {% for a in areas %}
-          {% for e in area_entities(a) %}
-            {% if e.split('.')[0] == 'light' %}
-              {% set ns.ents = ns.ents + [e] %}
-            {% endif %}
-          {% endfor %}
-        {% endfor %}
-      {% endif %}
-      {% if target_light.device_id is defined %}
-        {% set devices = [target_light.device_id] if target_light.device_id is string else target_light.device_id %}
-        {% for d in devices %}
-          {% for e in device_entities(d) %}
-            {% if e.split('.')[0] == 'light' %}
-              {% set ns.ents = ns.ents + [e] %}
-            {% endif %}
-          {% endfor %}
-        {% endfor %}
-      {% endif %}
-      {{ ns.ents | unique | list }}
+    entity_id: !input target_light
     to: "on"
  
 action:
   - delay: !input auto_off_duration
   - service: light.turn_off
-    target: !input target_light
+    target:
+      entity_id: !input target_light
  
 mode: restart
+ 

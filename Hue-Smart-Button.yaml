@@ -1,5 +1,5 @@
 blueprint:
-  name: Hue Smart Button V2 Light Control
+  name: Hue Smart Button Light Control
   description: >
     Control lights and a power source with a Hue Smart Button.
 
@@ -42,7 +42,7 @@ blueprint:
 
     brightness_step:
       name: Brightness Step
-      default: 20
+      default: 5
       selector:
         number:
           min: 1

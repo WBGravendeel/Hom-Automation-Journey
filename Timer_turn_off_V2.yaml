@@ -53,6 +53,7 @@ variables:
 trigger:
   - platform: state
     entity_id: !input target_light
+    from: "off"
     to: "on"
 
 action:

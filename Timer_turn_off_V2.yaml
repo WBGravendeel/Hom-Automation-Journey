@@ -1,0 +1,59 @@
+blueprint:
+  name: Auto Turn-Off After Duration V2
+  description: >
+    Turns a light (or any target) off automatically a set time after it
+    was turned on — regardless of what turned it on (button, app, wall
+    switch, etc). If the light is turned on again before the timer
+    finishes, the timer restarts from zero. If the light is already off
+    when the timer finishes, nothing happens.
+  domain: automation
+  input:
+    target_light:
+      name: Light(s) to auto-off
+      selector:
+        entity:
+          domain:
+            - light
+          multiple: true
+ 
+    auto_off_duration:
+      name: Auto-off duration
+      description: How long after turning on before the light turns off again.
+      default:
+        minutes: 30
+      selector:
+        duration: {}
+    
+    notify_target:
+      name: Notify Target
+      selector:
+        entity:
+          filter:
+            domain: notify
+    
+    notification:
+      name: Notification on auto-off
+      description: Notifitcation to be sent once the light is turned off
+      default: >-
+        Turned off {{ state_attr(target_light, 'friendly_name') }}.
+      selector:
+        text:
+ 
+trigger:
+  - platform: state
+    entity_id: !input target_light
+    to: "on"
+ 
+action:
+  - delay: !input auto_off_duration
+  - service: light.turn_off
+    target:
+      entity_id: !input target_light
+  - action: notify.send_message
+      target:
+        entity_id: !input notify_target
+      data:
+        title: "Automated turn-off"
+        message: "{{ notify_message }}"
+ 
+mode: restart

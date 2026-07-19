@@ -35,13 +35,18 @@ blueprint:
       name: Notification on auto-off
       description: Notification to be sent once the light is turned off
       default: >-
-        Turned off: {{ target_light | map('state_attr', 'friendly_name') | join(', ') }}.
+        {{ target_light | map('state_attr', 'friendly_name') | join(', ') }} will be turned off soon.
       selector:
         text:
 
 variables:
   target_light: !input target_light
   notification: !input notification
+  auto_off_duration: !input auto_off_duration
+  half_duration_seconds: >-
+    {{ (auto_off_duration.hours | default(0) | int * 3600)
+       + (auto_off_duration.minutes | default(0) | int * 60)
+       + (auto_off_duration.seconds | default(0) | int) }}
 
 trigger:
   - platform: state
@@ -49,15 +54,17 @@ trigger:
     to: "on"
 
 action:
-  - delay: !input auto_off_duration
-  - service: light.turn_off
-    target:
-      entity_id: !input target_light
+  - delay: "{{ half_duration_seconds / 2 }}"
   - action: notify.send_message
     target:
       entity_id: !input notify_target
     data:
       title: "Automated turn-off"
       message: "{{ notification }}"
+  - delay: "{{ half_duration_seconds / 2 }}"
+  - service: light.turn_off
+    target:
+      entity_id: !input target_light
+
 
 mode: restart

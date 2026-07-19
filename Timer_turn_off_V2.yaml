@@ -30,6 +30,8 @@ blueprint:
         entity:
           filter:
             domain: notify
+          multiple: true
+
 
     notification:
       name: Notification on auto-off

@@ -15,7 +15,7 @@ blueprint:
           domain:
             - light
           multiple: true
- 
+
     auto_off_duration:
       name: Auto-off duration
       description: How long after turning on before the light turns off again.
@@ -23,37 +23,41 @@ blueprint:
         minutes: 30
       selector:
         duration: {}
-    
+
     notify_target:
       name: Notify Target
       selector:
         entity:
           filter:
             domain: notify
-    
+
     notification:
       name: Notification on auto-off
-      description: Notifitcation to be sent once the light is turned off
+      description: Notification to be sent once the light is turned off
       default: >-
-        Turned off {{ state_attr(target_light, 'friendly_name') }}.
+        Turned off: {{ target_light | map('state_attr', 'friendly_name') | join(', ') }}.
       selector:
         text:
- 
+
+variables:
+  target_light: !input target_light
+  notification: !input notification
+
 trigger:
   - platform: state
     entity_id: !input target_light
     to: "on"
- 
+
 action:
   - delay: !input auto_off_duration
   - service: light.turn_off
     target:
       entity_id: !input target_light
   - action: notify.send_message
-      target:
-        entity_id: !input notify_target
-      data:
-        title: "Automated turn-off"
-        message: "{{ notify_message }}"
- 
+    target:
+      entity_id: !input notify_target
+    data:
+      title: "Automated turn-off"
+      message: "{{ notification }}"
+
 mode: restart

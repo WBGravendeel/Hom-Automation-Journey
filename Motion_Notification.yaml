@@ -1,0 +1,104 @@
+blueprint:
+  name: Camera Motion Alert (Nobody Home) V3
+  description: >
+    Sends a notification with a camera snapshot when motion is detected.
+    By default only fires when none of the selected people are home, but
+    this can be overridden with the "Always Alert" toggle.
+ 
+    Prerequisites:
+    - Add to configuration.yaml and restart HA:
+ 
+        homeassistant:
+          media_dirs:
+            local: /media
+          allowlist_external_dirs:
+            - '/media'
+ 
+    - Create the snapshots folder (Terminal/SSH):
+        mkdir -p /media/snapshots
+  domain: automation
+  input:
+    motion_sensor:
+      name: Motion Sensor
+      description: The binary sensor that detects motion near the camera.
+      selector:
+        entity:
+          domain: binary_sensor
+          device_class: motion
+ 
+    camera:
+      name: Camera
+      description: The camera to take a snapshot from when motion is detected.
+      selector:
+        entity:
+          domain: camera
+ 
+    people:
+      name: People
+      description: >
+        The alert only fires when ALL of these people are away from home.
+        Ignored if "Always Alert" is enabled.
+      selector:
+        entity:
+          domain: person
+          multiple: true
+ 
+    always_alert:
+      name: Always Alert
+      description: >
+        If enabled, sends notifications regardless of whether people are
+        home or not.
+      default: false
+      selector:
+        boolean: {}
+ 
+    notify_service:
+      name: Notification Service
+      description: >
+        The name of your notify service — just the part after "notify.",
+        e.g. "mobile_app_my_phone". Find yours under Developer Tools →
+        Services → search "notify".
+      selector:
+        text: {}
+ 
+    notification_title:
+      name: Notification Title
+      default: "Motion Detected"
+      selector:
+        text: {}
+ 
+variables:
+  people: !input people
+  always_alert: !input always_alert
+  notify_service: !input notify_service
+  snapshot_file: "/media/snapshots/motion_{{ now().strftime('%Y%m%d_%H%M%S') }}.jpg"
+  snapshot_url: "/media/local/snapshots/motion_{{ now().strftime('%Y%m%d_%H%M%S') }}.jpg"
+ 
+trigger:
+  - platform: state
+    entity_id: !input motion_sensor
+    from: "off"
+    to: "on"
+ 
+condition:
+  - condition: template
+    value_template: >-
+      {{ always_alert or (people | select('is_state', 'home') | list | count == 0) }}
+ 
+action:
+  - service: camera.snapshot
+    target:
+      entity_id: !input camera
+    data:
+      filename: "{{ snapshot_file }}"
+ 
+  - service: "notify.{{ notify_service }}"
+    data:
+      title: !input notification_title
+      message: "Motion detected at {{ now().strftime('%H:%M:%S on %d %B %Y') }}."
+      data:
+        image: "{{ snapshot_url }}"
+ 
+mode: single
+max_exceeded: silent
+ 

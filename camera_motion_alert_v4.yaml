@@ -117,14 +117,16 @@ blueprint:
       selector:
         text: {}
 
-    notify_service:
-      name: Notification Service
+    notify_devices:
+      name: Phones to Notify
       description: >
-        The name of your notify service, only the part after "notify.",
-        e.g. "mobile_app_my_phone". Find yours under Developer Tools →
-        Actions → search "notify".
+        The phones that receive the alert. Only devices with the Home
+        Assistant Companion App installed and logged in are listed.
       selector:
-        text: {}
+        device:
+          multiple: true
+          filter:
+            - integration: mobile_app
 
     notification_title:
       name: Notification Title
@@ -142,7 +144,13 @@ variables:
   save_snapshots: !input save_snapshots
   media_root: !input media_root
   snapshot_subfolder: !input snapshot_subfolder
-  notify_service: !input notify_service
+  notify_devices: !input notify_devices
+  notify_services: >-
+    {% set ns = namespace(s=[]) %}
+    {% for d in notify_devices %}
+      {% set ns.s = ns.s + ['mobile_app_' ~ (device_attr(d, 'name') | slugify)] %}
+    {% endfor %}
+    {{ ns.s }}
   notification_title: !input notification_title
   camera_entity: !input camera
   is_night: >-
@@ -184,21 +192,24 @@ actions:
         data:
           filename: "{{ snapshot_file }}"
 
-  - action: "notify.{{ notify_service }}"
-    data:
-      title: "{{ notification_title }}"
-      message: "Motion detected at {{ now().strftime('%H:%M:%S on %d %B %Y') }}."
-      data: >-
-        {% set img = snapshot_url if save_snapshots else '/api/camera_proxy/' ~ camera_entity %}
-        {% set d = {'image': img} %}
-        {% if critical %}
-          {% set d = dict(d,
-                push={'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}},
-                ttl=0,
-                priority='high',
-                channel='alarm_stream') %}
-        {% endif %}
-        {{ d }}
+  - repeat:
+      for_each: "{{ notify_services }}"
+      sequence:
+        - action: "notify.{{ repeat.item }}"
+          data:
+            title: "{{ notification_title }}"
+            message: "Motion detected at {{ now().strftime('%H:%M:%S on %d %B %Y') }}."
+            data: >-
+              {% set img = snapshot_url if save_snapshots else '/api/camera_proxy/' ~ camera_entity %}
+              {% set d = {'image': img} %}
+              {% if critical %}
+                {% set d = dict(d,
+                      push={'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}},
+                      ttl=0,
+                      priority='high',
+                      channel='alarm_stream') %}
+              {% endif %}
+              {{ d }}
 
 mode: single
 max_exceeded: silent

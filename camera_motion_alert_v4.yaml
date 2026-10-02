@@ -1,0 +1,204 @@
+blueprint:
+  name: Camera Motion Alert (Nobody Home) V4
+  description: >
+    Sends a notification with a camera image when motion is detected.
+    By default it only fires when none of the selected people are home.
+    You can also make it always fire, or always fire during a night-time
+    window. Optionally sends critical notifications that bypass silent
+    mode / Do Not Disturb, and optionally saves each snapshot to your
+    media folder.
+
+    No server-side setup is needed. Without saved snapshots, the image
+    comes from Home Assistant's built-in camera proxy. With saved
+    snapshots, the image is the exact frame captured at the moment of
+    motion, stored in your default media folder (visible in the Media
+    panel). Note: Home Assistant does not delete old snapshots for you.
+  domain: automation
+  input:
+    motion_sensor:
+      name: Motion Sensor
+      description: The binary sensor that detects motion near the camera.
+      selector:
+        entity:
+          domain: binary_sensor
+          device_class: motion
+
+    camera:
+      name: Camera
+      description: The camera whose image is attached to the notification.
+      selector:
+        entity:
+          domain: camera
+
+    people:
+      name: People
+      description: >
+        The alert fires when ALL of these people are away from home.
+        Not checked when "Always Alert" is on, or during the night window
+        when "Always Alert at Night" is on.
+      default: []
+      selector:
+        entity:
+          domain: person
+          multiple: true
+
+    always_alert:
+      name: Always Alert
+      description: Send notifications regardless of who is home.
+      default: false
+      selector:
+        boolean: {}
+
+    night_mode:
+      name: Always Alert at Night
+      description: >
+        Send notifications regardless of who is home during the time
+        window below.
+      default: false
+      selector:
+        boolean: {}
+
+    night_start:
+      name: Night Window Start
+      description: Start of the night window. Can be before midnight.
+      default: "22:00:00"
+      selector:
+        time: {}
+
+    night_end:
+      name: Night Window End
+      description: End of the night window. Can be after midnight.
+      default: "07:00:00"
+      selector:
+        time: {}
+
+    critical:
+      name: Critical Notifications
+      description: >
+        Notifications bypass silent mode and Do Not Disturb.
+        iOS: allow Critical Alerts for the Home Assistant app when asked
+        (or under iOS Settings → Notifications → Home Assistant).
+        Android: uses the "alarm_stream" channel, which plays even on silent.
+      default: false
+      selector:
+        boolean: {}
+
+    save_snapshots:
+      name: Save Snapshots
+      description: >
+        Save a snapshot to the media folder on every alert and attach that
+        exact frame to the notification. When off, the notification shows
+        a live frame from the camera proxy and nothing is stored.
+      default: false
+      selector:
+        boolean: {}
+
+    media_root:
+      name: Media Folder (install type)
+      description: >
+        Where your default media folder is. Home Assistant OS and
+        Supervised use /media. Container and Core installs use
+        /config/media. Only used when "Save Snapshots" is on.
+      default: "/media"
+      selector:
+        select:
+          options:
+            - label: "Home Assistant OS / Supervised (/media)"
+              value: "/media"
+            - label: "Container / Core (/config/media)"
+              value: "/config/media"
+
+    snapshot_subfolder:
+      name: Snapshot Subfolder
+      description: >
+        Subfolder inside the media folder for snapshots. It is created
+        automatically. Only used when "Save Snapshots" is on.
+      default: "snapshots"
+      selector:
+        text: {}
+
+    notify_service:
+      name: Notification Service
+      description: >
+        The name of your notify service, only the part after "notify.",
+        e.g. "mobile_app_my_phone". Find yours under Developer Tools →
+        Actions → search "notify".
+      selector:
+        text: {}
+
+    notification_title:
+      name: Notification Title
+      default: "Motion Detected"
+      selector:
+        text: {}
+
+variables:
+  people: !input people
+  always_alert: !input always_alert
+  night_mode: !input night_mode
+  night_start: !input night_start
+  night_end: !input night_end
+  critical: !input critical
+  save_snapshots: !input save_snapshots
+  media_root: !input media_root
+  snapshot_subfolder: !input snapshot_subfolder
+  notify_service: !input notify_service
+  notification_title: !input notification_title
+  camera_entity: !input camera
+  is_night: >-
+    {% set t = now().strftime('%H:%M:%S') %}
+    {% if night_start <= night_end %}
+      {{ night_start <= t < night_end }}
+    {% else %}
+      {{ t >= night_start or t < night_end }}
+    {% endif %}
+  nobody_home: >-
+    {{ people | select('is_state', 'home') | list | count == 0 }}
+  stamp: "{{ now().strftime('%Y%m%d_%H%M%S') }}"
+  subfolder: "{{ snapshot_subfolder | trim | replace('\\', '/') | regex_replace('^/+|/+$', '') }}"
+  snapshot_name: "motion_{{ stamp }}.jpg"
+  snapshot_file: >-
+    {{ media_root ~ ('/' ~ subfolder if subfolder else '') ~ '/' ~ snapshot_name }}
+  snapshot_url: >-
+    {{ '/media/local' ~ ('/' ~ subfolder if subfolder else '') ~ '/' ~ snapshot_name }}
+
+triggers:
+  - trigger: state
+    entity_id: !input motion_sensor
+    from: "off"
+    to: "on"
+
+conditions:
+  - condition: template
+    value_template: >-
+      {{ always_alert or (night_mode and is_night) or nobody_home }}
+
+actions:
+  - if:
+      - condition: template
+        value_template: "{{ save_snapshots }}"
+    then:
+      - action: camera.snapshot
+        target:
+          entity_id: !input camera
+        data:
+          filename: "{{ snapshot_file }}"
+
+  - action: "notify.{{ notify_service }}"
+    data:
+      title: "{{ notification_title }}"
+      message: "Motion detected at {{ now().strftime('%H:%M:%S on %d %B %Y') }}."
+      data: >-
+        {% set img = snapshot_url if save_snapshots else '/api/camera_proxy/' ~ camera_entity %}
+        {% set d = {'image': img} %}
+        {% if critical %}
+          {% set d = dict(d,
+                push={'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}},
+                ttl=0,
+                priority='high',
+                channel='alarm_stream') %}
+        {% endif %}
+        {{ d }}
+
+mode: single
+max_exceeded: silent

@@ -12,7 +12,8 @@ blueprint:
     comes from Home Assistant's built-in camera proxy. With saved
     snapshots, the image is the exact frame captured at the moment of
     motion, stored in your default media folder (visible in the Media
-    panel). Note: Home Assistant does not delete old snapshots for you.
+    panel). A video clip can be saved alongside it. Note: Home Assistant
+    does not delete old snapshots or videos for you.
   domain: automation
   input:
     motion_sensor:
@@ -98,7 +99,7 @@ blueprint:
       description: >
         Where your default media folder is. Home Assistant OS and
         Supervised use /media. Container and Core installs use
-        /config/media. Only used when "Save Snapshots" is on.
+        /config/media. Only used when "Save Snapshots" or "Save Video Clip" is on.
       default: "/media"
       selector:
         select:
@@ -112,10 +113,47 @@ blueprint:
       name: Snapshot Subfolder
       description: >
         Subfolder inside the media folder for snapshots. It is created
-        automatically. Only used when "Save Snapshots" is on.
+        automatically. Only used when "Save Snapshots" or "Save Video Clip" is on.
       default: "snapshots"
       selector:
         text: {}
+
+    save_video:
+      name: Save Video Clip
+      description: >
+        Record a video clip on every alert, saved next to the snapshots in
+        the media folder above. Requires a camera that supports streaming
+        (e.g. RTSP); cameras that only provide still images can't record.
+      default: false
+      selector:
+        boolean: {}
+
+    video_duration:
+      name: Video Length
+      description: How many seconds to record after motion is detected.
+      default: 20
+      selector:
+        number:
+          min: 5
+          max: 120
+          step: 5
+          unit_of_measurement: seconds
+          mode: slider
+
+    video_lookback:
+      name: Video Lookback
+      description: >
+        Seconds of footage from BEFORE the motion to include. Only works if
+        "Preload camera stream" is turned on in the camera entity's
+        settings; otherwise leave this at 0.
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 10
+          step: 1
+          unit_of_measurement: seconds
+          mode: slider
 
     notify_devices:
       name: Phones to Notify
@@ -127,6 +165,45 @@ blueprint:
           multiple: true
           filter:
             - integration: mobile_app
+
+    tap_action:
+      name: When Tapping the Notification
+      description: >
+        What the Home Assistant app opens when you tap the notification.
+        "Camera" opens the camera's live view. "Media browser" opens the
+        media browser, where snapshots and videos are under My media.
+      default: camera
+      selector:
+        select:
+          options:
+            - label: "Open the camera (live view)"
+              value: camera
+            - label: "Open the media browser"
+              value: media
+            - label: "Open a dashboard (path below)"
+              value: custom
+            - label: "Do nothing (just open the app)"
+              value: none
+
+    tap_path:
+      name: Dashboard Path
+      description: >
+        The page to open when "Open a dashboard" is selected above, e.g.
+        "/lovelace/cameras". Copy it from the address bar after your
+        Home Assistant URL.
+      default: "/lovelace/0"
+      selector:
+        text: {}
+
+    persistent:
+      name: Also Log in Home Assistant
+      description: >
+        Also add each alert to the notifications list in Home Assistant
+        (the bell icon in the sidebar), so you can read past alerts in
+        the app after dismissing them on your phone.
+      default: false
+      selector:
+        boolean: {}
 
     notification_title:
       name: Notification Title
@@ -144,6 +221,9 @@ variables:
   save_snapshots: !input save_snapshots
   media_root: !input media_root
   snapshot_subfolder: !input snapshot_subfolder
+  save_video: !input save_video
+  video_duration: !input video_duration
+  video_lookback: !input video_lookback
   notify_devices: !input notify_devices
   notify_services: >-
     {% set ns = namespace(s=[]) %}
@@ -152,6 +232,15 @@ variables:
     {% endfor %}
     {{ ns.s }}
   notification_title: !input notification_title
+  tap_action: !input tap_action
+  tap_path: !input tap_path
+  persistent: !input persistent
+  tap_target: >-
+    {% if tap_action == 'camera' %}entityId:{{ camera_entity }}
+    {%- elif tap_action == 'media' %}/media-browser
+    {%- elif tap_action == 'custom' %}{{ tap_path | trim }}
+    {%- endif %}
+  alert_time: "{{ now().strftime('%H:%M:%S on %d %B %Y') }}"
   camera_entity: !input camera
   is_night: >-
     {% set t = now().strftime('%H:%M:%S') %}
@@ -170,6 +259,8 @@ variables:
     {{ media_root ~ ('/' ~ subfolder if subfolder else '') ~ '/' ~ snapshot_name }}
   snapshot_url: >-
     {{ '/media/local' ~ ('/' ~ subfolder if subfolder else '') ~ '/' ~ snapshot_name }}
+  video_file: >-
+    {{ media_root ~ ('/' ~ subfolder if subfolder else '') ~ '/motion_' ~ stamp ~ '.mp4' }}
 
 triggers:
   - trigger: state
@@ -199,7 +290,7 @@ actions:
         - action: "notify.{{ repeat.item }}"
           data:
             title: "{{ notification_title }}"
-            message: "Motion detected at {{ now().strftime('%H:%M:%S on %d %B %Y') }}."
+            message: "Motion detected at {{ alert_time }}."
             data: >-
               {% set img = snapshot_url if save_snapshots else '/api/camera_proxy/' ~ camera_entity %}
               {% set d = {'image': img} %}
@@ -210,7 +301,42 @@ actions:
                       priority='high',
                       channel='alarm_stream') %}
               {% endif %}
+              {% if tap_target %}
+                {% set d = dict(d, url=tap_target, clickAction=tap_target) %}
+              {% endif %}
               {{ d }}
+
+  - if:
+      - condition: template
+        value_template: "{{ persistent }}"
+    then:
+      - action: persistent_notification.create
+        data:
+          notification_id: "motion_{{ stamp }}"
+          title: "{{ notification_title }}"
+          message: |-
+            Motion detected at {{ alert_time }} on {{ state_attr(camera_entity, 'friendly_name') or camera_entity }}.
+            {%- if save_snapshots %}
+
+            Snapshot: `{{ snapshot_file }}`
+            {%- endif %}
+            {%- if save_video %}
+
+            Video: `{{ video_file }}`
+            {%- endif %}
+
+  - if:
+      - condition: template
+        value_template: "{{ save_video }}"
+    then:
+      - action: camera.record
+        continue_on_error: true
+        target:
+          entity_id: !input camera
+        data:
+          filename: "{{ video_file }}"
+          duration: "{{ video_duration }}"
+          lookback: "{{ video_lookback }}"
 
 mode: single
 max_exceeded: silent

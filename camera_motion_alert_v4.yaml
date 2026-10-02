@@ -163,7 +163,8 @@ variables:
   nobody_home: >-
     {{ people | select('is_state', 'home') | list | count == 0 }}
   stamp: "{{ now().strftime('%Y%m%d_%H%M%S') }}"
-  subfolder: "{{ snapshot_subfolder | trim | replace('\\', '/') | regex_replace('^/+|/+$', '') }}"
+  subfolder: >-
+    {{ snapshot_subfolder | trim | regex_replace('^/+|/+$', '') }}
   snapshot_name: "motion_{{ stamp }}.jpg"
   snapshot_file: >-
     {{ media_root ~ ('/' ~ subfolder if subfolder else '') ~ '/' ~ snapshot_name }}

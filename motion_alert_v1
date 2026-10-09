@@ -1,0 +1,237 @@
+blueprint:
+  name: Motion Alert (Nobody Home) V1
+  description: >
+    Sends a notification when a motion sensor detects motion. For areas
+    without a camera.
+    By default it only fires when none of the selected people are home.
+    You can also make it always fire, or always fire during a night-time
+    window. Optionally sends critical notifications that bypass silent
+    mode / Do Not Disturb, and logs each alert in Home Assistant.
+
+    No server-side setup is needed.
+  domain: automation
+  input:
+    motion_sensor:
+      name: Motion Sensor
+      description: The binary sensor that detects motion.
+      selector:
+        entity:
+          domain: binary_sensor
+          device_class:
+            - motion
+            - occupancy
+            - presence
+
+    people:
+      name: People
+      description: >
+        The alert fires when ALL of these people are away from home.
+        Not checked when "Always Alert" is on, or during the night window
+        when "Always Alert at Night" is on. If left empty, everyone is
+        treated as away and every motion alerts.
+      default: []
+      selector:
+        entity:
+          domain: person
+          multiple: true
+
+    always_alert:
+      name: Always Alert
+      description: Send notifications regardless of who is home.
+      default: false
+      selector:
+        boolean: {}
+
+    night_mode:
+      name: Always Alert at Night
+      description: >
+        Send notifications regardless of who is home during the time
+        window below.
+      default: false
+      selector:
+        boolean: {}
+
+    night_start:
+      name: Night Window Start
+      description: >
+        Start of the night window. Can be before midnight.
+        Note: 12:00 PM is noon, 12:00 AM is midnight.
+      default: "22:00:00"
+      selector:
+        time: {}
+
+    night_end:
+      name: Night Window End
+      description: End of the night window. Can be after midnight.
+      default: "07:00:00"
+      selector:
+        time: {}
+
+    critical:
+      name: Critical Notifications
+      description: >
+        Notifications bypass silent mode and Do Not Disturb.
+        iOS: allow Critical Alerts for the Home Assistant app when asked
+        (or under iOS Settings → Notifications → Home Assistant).
+        Android: uses the "alarm_stream" channel, which plays even on silent.
+      default: false
+      selector:
+        boolean: {}
+
+    cooldown:
+      name: Cooldown
+      description: >
+        After an alert, ignore further motion for this many minutes, so
+        someone walking around doesn't send a stream of notifications.
+        0 means every new motion alerts.
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 60
+          step: 1
+          unit_of_measurement: minutes
+          mode: slider
+
+    tap_action:
+      name: When Tapping the Notification
+      description: >
+        What the Home Assistant app opens when you tap the notification.
+        "Motion sensor" opens the sensor with its recent history.
+      default: sensor
+      selector:
+        select:
+          options:
+            - label: "Open the motion sensor (history)"
+              value: sensor
+            - label: "Open a dashboard (path below)"
+              value: custom
+            - label: "Do nothing (just open the app)"
+              value: none
+
+    tap_path:
+      name: Dashboard Path
+      description: >
+        The page to open when "Open a dashboard" is selected above, e.g.
+        "/lovelace/security". Copy it from the address bar after your
+        Home Assistant URL.
+      default: "/lovelace/0"
+      selector:
+        text: {}
+
+    persistent:
+      name: Also Log in Home Assistant
+      description: >
+        Also add each alert to the notifications list in Home Assistant
+        (the bell icon in the sidebar), so you can read past alerts in
+        the app after dismissing them on your phone.
+      default: false
+      selector:
+        boolean: {}
+
+    notify_devices:
+      name: Phones to Notify
+      description: >
+        The phones that receive the alert. Only devices with the Home
+        Assistant Companion App installed and logged in are listed.
+      selector:
+        device:
+          multiple: true
+          filter:
+            - integration: mobile_app
+
+    notification_title:
+      name: Notification Title
+      default: "Motion Detected"
+      selector:
+        text: {}
+
+variables:
+  sensor_entity: !input motion_sensor
+  people: !input people
+  always_alert: !input always_alert
+  night_mode: !input night_mode
+  night_start: !input night_start
+  night_end: !input night_end
+  critical: !input critical
+  cooldown: !input cooldown
+  tap_action: !input tap_action
+  tap_path: !input tap_path
+  persistent: !input persistent
+  notify_devices: !input notify_devices
+  notification_title: !input notification_title
+  notify_services: >-
+    {% set ns = namespace(s=[]) %}
+    {% for d in notify_devices %}
+      {% set ns.s = ns.s + ['mobile_app_' ~ (device_attr(d, 'name') | slugify)] %}
+    {% endfor %}
+    {{ ns.s }}
+  sensor_name: "{{ state_attr(sensor_entity, 'friendly_name') or sensor_entity }}"
+  is_night: >-
+    {% set t = now().strftime('%H:%M:%S') %}
+    {% if night_start <= night_end %}
+      {{ night_start <= t < night_end }}
+    {% else %}
+      {{ t >= night_start or t < night_end }}
+    {% endif %}
+  nobody_home: >-
+    {{ people | select('is_state', 'home') | list | count == 0 }}
+  stamp: "{{ now().strftime('%Y%m%d_%H%M%S') }}"
+  alert_time: "{{ now().strftime('%H:%M:%S on %d %B %Y') }}"
+  tap_target: >-
+    {% if tap_action == 'sensor' %}entityId:{{ sensor_entity }}
+    {%- elif tap_action == 'custom' %}{{ tap_path | trim }}
+    {%- endif %}
+
+triggers:
+  - trigger: state
+    entity_id: !input motion_sensor
+    from: "off"
+    to: "on"
+
+conditions:
+  - condition: template
+    value_template: >-
+      {{ always_alert or (night_mode and is_night) or nobody_home }}
+
+actions:
+  - repeat:
+      for_each: "{{ notify_services }}"
+      sequence:
+        - action: "notify.{{ repeat.item }}"
+          data:
+            title: "{{ notification_title }}"
+            message: "{{ sensor_name }} detected motion at {{ alert_time }}."
+            data: >-
+              {% set d = {'tag': 'motion_' ~ sensor_entity} %}
+              {% if critical %}
+                {% set d = dict(d,
+                      push={'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}},
+                      ttl=0,
+                      priority='high',
+                      channel='alarm_stream') %}
+              {% endif %}
+              {% if tap_target %}
+                {% set d = dict(d, url=tap_target, clickAction=tap_target) %}
+              {% endif %}
+              {{ d }}
+
+  - if:
+      - condition: template
+        value_template: "{{ persistent }}"
+    then:
+      - action: persistent_notification.create
+        data:
+          notification_id: "motion_{{ stamp }}"
+          title: "{{ notification_title }}"
+          message: "{{ sensor_name }} detected motion at {{ alert_time }}."
+
+  - if:
+      - condition: template
+        value_template: "{{ cooldown | int(0) > 0 }}"
+    then:
+      - delay:
+          minutes: "{{ cooldown | int(0) }}"
+
+mode: single
+max_exceeded: silent

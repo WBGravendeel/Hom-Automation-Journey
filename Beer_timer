@@ -153,21 +153,27 @@ blueprint:
               min: 0
               max: 60
               unit_of_measurement: s
-        recipients:
-          name: Who gets notified
+        notify_people:
+          name: People to notify
           description: >-
-            One line per phone: `notify service: person`. The phone is only
-            notified while that person is home. Use `always` instead of a
-            person to notify regardless (also works for a notify group).
-            Example:
-
-            notify.mobile_app_adriaans_phone: person.adriaan
-
-            notify.mobile_app_other_phone: person.other
-
-            notify.beer_group: always
+            Each person's phone (the companion app device tracker assigned to
+            them under Settings → People) is notified only while that person
+            is home.
+          default: []
           selector:
-            object: {}
+            entity:
+              multiple: true
+              filter:
+                - domain: person
+        notify_always_devices:
+          name: Phones that are always notified (optional)
+          description: Notified whether or not anyone is home.
+          default: []
+          selector:
+            device:
+              multiple: true
+              filter:
+                - integration: mobile_app
         nobody_home_fallback:
           name: If nobody is home, notify everyone
           description: >-
@@ -246,14 +252,29 @@ variables:
   light_entities: "{{ [cooling_light, done_light] | unique | list }}"
   restore_lights: !input restore_lights
   done_flash: !input done_flash
-  recipients: !input recipients
+  people: !input notify_people
+  always_devices: !input notify_always_devices
   nobody_home_fallback: !input nobody_home_fallback
-  all_services: >-
+  # Each person's companion-app phone(s) -> notify.mobile_app_<device name>
+  person_phones: >-
     {%- set ns = namespace(l=[]) -%}
-    {%- for svc in (recipients or {}).keys() -%}
-      {%- set ns.l = ns.l + [svc if svc.startswith('notify.') else 'notify.' ~ svc] -%}
+    {%- set app_entities = integration_entities('mobile_app') -%}
+    {%- for p in people -%}
+      {%- for t in state_attr(p, 'device_trackers') or [] -%}
+        {%- if t in app_entities and device_id(t) -%}
+          {%- set ns.l = ns.l + [{'person': p, 'svc': 'notify.mobile_app_' ~ (device_attr(device_id(t), 'name') | slugify)}] -%}
+        {%- endif -%}
+      {%- endfor -%}
     {%- endfor -%}
     {{ ns.l }}
+  always_services: >-
+    {%- set ns = namespace(l=[]) -%}
+    {%- for d in always_devices -%}
+      {%- set ns.l = ns.l + ['notify.mobile_app_' ~ (device_attr(d, 'name') | slugify)] -%}
+    {%- endfor -%}
+    {{ ns.l }}
+  all_services: >-
+    {{ ((person_phones | map(attribute='svc') | list) + always_services) | unique | list }}
   reminder_interval: !input reminder_interval
   max_reminders: !input max_reminders
   message_text: !input message
@@ -375,20 +396,15 @@ actions:
                     # Re-evaluated every reminder, so people arriving or
                     # leaving are picked up.
                     targets: >-
-                      {%- set ns = namespace(always=[], home=[], persons=[]) -%}
-                      {%- for svc, who in (recipients or {}).items() -%}
-                        {%- set s = svc if svc.startswith('notify.') else 'notify.' ~ svc -%}
-                        {%- if who is none or (who | string | lower) in ['always', ''] -%}
-                          {%- set ns.always = ns.always + [s] -%}
-                        {%- else -%}
-                          {%- set ns.persons = ns.persons + [s] -%}
-                          {%- if is_state(who, 'home') -%}
-                            {%- set ns.home = ns.home + [s] -%}
-                          {%- endif -%}
+                      {%- set ns = namespace(home=[]) -%}
+                      {%- for e in person_phones -%}
+                        {%- if is_state(e.person, 'home') -%}
+                          {%- set ns.home = ns.home + [e.svc] -%}
                         {%- endif -%}
                       {%- endfor -%}
-                      {%- set chosen = ns.home if (ns.home | count > 0 or not nobody_home_fallback) else ns.persons -%}
-                      {{ (ns.always + chosen) | unique | list }}
+                      {%- set chosen = ns.home if (ns.home | count > 0 or not nobody_home_fallback)
+                                       else (person_phones | map(attribute='svc') | list) -%}
+                      {{ (always_services + chosen) | unique | list }}
                     waited_min: >-
                       {{ ((now() - as_datetime(ready_at)).total_seconds() / 60) | round(0) | int }}
                 - repeat:

@@ -1,0 +1,34 @@
+alias: Door opened – notify phones
+description: Sends a push notification to selected phones when the IKEA door sensor opens.
+mode: single          # ignores re-triggers while the cooldown below is running
+variables:
+  # Add or remove phones here (Settings → Devices → Mobile App → service name)
+  phones:
+    - notify.mobile_app_phone_1
+    - notify.mobile_app_phone_2
+  # Dashboard to open when the notification is tapped (path after your HA address)
+  dashboard: /lovelace/0
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.ikea_door_sensor_opening   # change to your sensor's entity ID
+    from: "off"
+    to: "on"
+actions:
+  - repeat:
+      for_each: "{{ phones }}"
+      sequence:
+        - action: "{{ repeat.item }}"
+          data:
+            title: "Door opened"
+            message: >-
+              {{ state_attr(trigger.entity_id, 'friendly_name') }}
+              opened at {{ now().strftime('%H:%M') }}
+            data:
+              tag: door-open              # replaces the previous alert instead of stacking
+              url: "{{ dashboard }}"          # iPhone: open this dashboard on tap
+              clickAction: "{{ dashboard }}"  # Android: open this dashboard on tap
+              push:
+                interruption-level: time-sensitive   # iPhone: break through Focus
+              ttl: 0                      # Android: deliver immediately
+              priority: high
+  - delay: "00:00:30"   # cooldown so a door swinging back and forth doesn't spam you

@@ -1,0 +1,119 @@
+blueprint:
+  name: Last one out – open door alert
+  description: >
+    When the last person of a group leaves home and one or more of the selected
+    door/window sensors are still open, send a notification to that person.
+
+    **Notify targets:** by default the blueprint guesses each person's mobile
+    app notify service from the first device_tracker attached to the person
+    (device_tracker.pixel_8 → notify.mobile_app_pixel_8). If that guess is wrong
+    for someone, add them to the "Notify targets per person" map, e.g.
+
+        person.adriaan: notify.mobile_app_adriaans_iphone
+        person.anna: mobile_app_annas_phone
+
+    **Message variables** you can use in the title/message:
+    `{{ person_name }}`, `{{ open_doors_text }}`, `{{ open_count }}`.
+  domain: automation
+  input:
+    persons:
+      name: People
+      description: Everyone who counts as "home". The alert fires when the last of them leaves.
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: person
+    doors:
+      name: Door / window sensors
+      description: Sensors to check. "on" = open.
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: binary_sensor
+              device_class:
+                - door
+                - garage_door
+                - window
+                - opening
+    leave_delay:
+      name: Away for at least
+      description: >
+        How long a person must be away before checking. Filters out GPS jitter
+        and gives you time to close the door behind you.
+      default:
+        minutes: 2
+      selector:
+        duration: {}
+    notify_map:
+      name: Notify targets per person (optional)
+      description: Override the guessed notify service, one line per person.
+      default: {}
+      selector:
+        object: {}
+    title:
+      name: Notification title
+      default: "Door left open"
+      selector:
+        text: {}
+    message:
+      name: Notification message
+      default: "You were the last to leave, {{ person_name }}. Still open: {{ open_doors_text }}."
+      selector:
+        text:
+          multiline: true
+
+mode: queued
+max: 5
+
+triggers:
+  - trigger: state
+    entity_id: !input persons
+    from: home
+    not_to:
+      - unknown
+      - unavailable
+    for: !input leave_delay
+
+variables:
+  persons: !input persons
+  doors: !input doors
+  notify_map: !input notify_map
+  leaver: "{{ trigger.entity_id }}"
+  person_name: "{{ state_attr(leaver, 'friendly_name') or leaver }}"
+  open_doors: >
+    {{ expand(doors) | selectattr('state', 'eq', 'on') | map(attribute='name') | list }}
+  open_count: "{{ open_doors | count }}"
+  open_doors_text: "{{ open_doors | join(', ') }}"
+  notify_service: >
+    {% set override = notify_map.get(leaver) if notify_map else none %}
+    {% if override %}
+      {{ override if override.startswith('notify.') else 'notify.' ~ override }}
+    {% else %}
+      {% set tracker = (state_attr(leaver, 'device_trackers') or [])
+           | select('match', 'device_tracker\.') | first | default('') %}
+      {{ 'notify.mobile_app_' ~ tracker.split('.')[1] if tracker else '' }}
+    {% endif %}
+
+conditions:
+  # Nobody from the group is still home
+  - condition: template
+    value_template: >
+      {{ expand(persons) | selectattr('state', 'eq', 'home') | list | count == 0 }}
+  # At least one sensor is open
+  - condition: template
+    value_template: "{{ open_count | int > 0 }}"
+  # We found somewhere to send it
+  - condition: template
+    value_template: "{{ notify_service | trim != '' }}"
+
+actions:
+  - action: "{{ notify_service | trim }}"
+    data:
+      title: !input title
+      message: !input message
+      data:
+        tag: last-one-out-doors
+        priority: high
+        ttl: 0

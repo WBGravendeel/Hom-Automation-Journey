@@ -1,0 +1,537 @@
+blueprint:
+  name: Beer freezer timer
+  description: >-
+    Press a button (Hue smart button or a virtual input_button) to start chilling
+    beer in the freezer. A light shows that cooling is in progress. When the
+    timer runs out, the light changes to a "done" colour and your phone gets a
+    reminder every X minutes until the freezer door is opened or someone taps
+    "Took it out". "Snooze" silences reminders for a while; the door still ends it. Afterwards the lights return to how they were.
+
+
+    **Helpers you need to create first** (Settings → Devices & services → Helpers):
+
+    - **Number** (input_number) for the cooling time in minutes, e.g. 5–120.
+
+    - **Timer** (timer) with *Restore* ticked, so a running timer survives a
+      Home Assistant restart.
+
+    - Optional: **Button** (input_button) if you want a dashboard start button.
+
+
+    **Button behaviour:** a Hue button short press starts (or restarts) the timer,
+    a long press cancels. An input_button always starts. Cancelling the timer
+    from a dashboard timer card also cancels everything.
+  domain: automation
+  homeassistant:
+    min_version: "2024.10.0"
+  input:
+    start_section:
+      name: Start and cancel
+      icon: mdi:gesture-tap-button
+      input:
+        buttons:
+          name: Start buttons
+          description: >-
+            Hue button event entities (e.g. event.hue_smart_button_button_1)
+            and/or input_button helpers.
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: event
+                - domain: input_button
+        start_event_types:
+          name: Hue press types that start the timer
+          default: [short_release]
+          selector:
+            select:
+              multiple: true
+              custom_value: true
+              options: [initial_press, short_release, long_press, long_release, repeat]
+        cancel_event_types:
+          name: Hue press types that cancel
+          default: [long_press]
+          selector:
+            select:
+              multiple: true
+              custom_value: true
+              options: [initial_press, short_release, long_press, long_release, repeat]
+
+    timing_section:
+      name: Timing
+      icon: mdi:timer-outline
+      input:
+        duration_entity:
+          name: Cooling time (input_number, minutes)
+          selector:
+            entity:
+              filter:
+                - domain: input_number
+        timer_entity:
+          name: Timer helper
+          description: Tick "Restore" on this timer so it survives restarts.
+          selector:
+            entity:
+              filter:
+                - domain: timer
+
+    light_section:
+      name: Lights
+      icon: mdi:lightbulb-group
+      input:
+        cooling_light:
+          name: Cooling light
+          selector:
+            entity:
+              filter:
+                - domain: light
+        cooling_color:
+          name: Cooling colour
+          default: [0, 120, 255]
+          selector:
+            color_rgb: {}
+        cooling_brightness:
+          name: Cooling brightness (%)
+          default: 40
+          selector:
+            number:
+              min: 1
+              max: 100
+              unit_of_measurement: "%"
+        done_light:
+          name: Done light (optional)
+          description: Leave empty to use the cooling light for both.
+          default: ""
+          selector:
+            entity:
+              filter:
+                - domain: light
+        done_color:
+          name: Done colour
+          default: [255, 150, 0]
+          selector:
+            color_rgb: {}
+        done_brightness:
+          name: Done brightness (%)
+          default: 100
+          selector:
+            number:
+              min: 1
+              max: 100
+              unit_of_measurement: "%"
+        done_flash:
+          name: Flash the light when done
+          description: Hue lights do a slow "breathe" effect.
+          default: true
+          selector:
+            boolean: {}
+        restore_lights:
+          name: Restore lights afterwards
+          description: >-
+            On: lights return to their previous state (on/off, colour).
+            Off: lights are switched off at the end.
+          default: true
+          selector:
+            boolean: {}
+
+    notify_section:
+      name: Freezer door and notifications
+      icon: mdi:cellphone-message
+      input:
+        door_sensor:
+          name: Freezer door sensor
+          selector:
+            entity:
+              filter:
+                - domain: binary_sensor
+        door_min_open:
+          name: Door must be open for at least (seconds)
+          description: Ignores a quick bump of the door. 0 = any opening counts.
+          default: 2
+          selector:
+            number:
+              min: 0
+              max: 60
+              unit_of_measurement: s
+        recipients:
+          name: Who gets notified
+          description: >-
+            One line per phone: `notify service: person`. The phone is only
+            notified while that person is home. Use `always` instead of a
+            person to notify regardless (also works for a notify group).
+            Example:
+
+            notify.mobile_app_adriaans_phone: person.adriaan
+
+            notify.mobile_app_other_phone: person.other
+
+            notify.beer_group: always
+          selector:
+            object: {}
+        nobody_home_fallback:
+          name: If nobody is home, notify everyone
+          description: >-
+            Otherwise beer left in the freezer while everyone is out would go
+            unnoticed.
+          default: true
+          selector:
+            boolean: {}
+        reminder_interval:
+          name: Remind every (minutes)
+          default: 5
+          selector:
+            number:
+              min: 1
+              max: 60
+              unit_of_measurement: min
+        snooze_minutes:
+          name: Snooze length (minutes)
+          description: >-
+            Length of the "Snooze" button on the notification. The other
+            button, "Took it out", ends the reminders.
+          default: 5
+          selector:
+            number:
+              min: 1
+              max: 60
+              unit_of_measurement: min
+        max_reminders:
+          name: Maximum number of reminders
+          description: 0 = keep reminding until the door is opened.
+          default: 12
+          selector:
+            number:
+              min: 0
+              max: 100
+              mode: box
+        title:
+          name: Notification title
+          default: "🍺 Beer is cold"
+          selector:
+            text: {}
+        message:
+          name: Notification message
+          default: "Take the beer out of the freezer."
+          selector:
+            text: {}
+
+mode: restart
+max_exceeded: silent
+
+triggers:
+  - trigger: state
+    entity_id: !input buttons
+    not_to: [unavailable]
+    id: button
+  - trigger: event
+    event_type: timer.finished
+    event_data:
+      entity_id: !input timer_entity
+    id: finished
+  - trigger: event
+    event_type: timer.cancelled
+    event_data:
+      entity_id: !input timer_entity
+    id: cancelled
+
+variables:
+  start_types: !input start_event_types
+  cancel_types: !input cancel_event_types
+  duration_entity: !input duration_entity
+  timer_entity: !input timer_entity
+  cooling_light: !input cooling_light
+  done_light_input: !input done_light
+  done_light: "{{ done_light_input if done_light_input else cooling_light }}"
+  separate_lights: "{{ done_light != cooling_light }}"
+  light_entities: "{{ [cooling_light, done_light] | unique | list }}"
+  restore_lights: !input restore_lights
+  done_flash: !input done_flash
+  recipients: !input recipients
+  nobody_home_fallback: !input nobody_home_fallback
+  all_services: >-
+    {%- set ns = namespace(l=[]) -%}
+    {%- for svc in (recipients or {}).keys() -%}
+      {%- set ns.l = ns.l + [svc if svc.startswith('notify.') else 'notify.' ~ svc] -%}
+    {%- endfor -%}
+    {{ ns.l }}
+  reminder_interval: !input reminder_interval
+  max_reminders: !input max_reminders
+  message_text: !input message
+  scene_id: >-
+    {%- set raw = this.attributes.id | default(this.entity_id.split('.')[1], true) -%}
+    beer_restore_{{ raw | string | slugify }}
+  scene_entity: "scene.{{ scene_id }}"
+  snooze_minutes: !input snooze_minutes
+  action_done: "BEER_DONE_{{ scene_id | upper }}"
+  action_snooze: "BEER_SNOOZE_{{ scene_id | upper }}"
+  notif_tag: "{{ scene_id }}"
+  kind: >-
+    {%- if trigger.id == 'finished' -%}done
+    {%- elif trigger.id == 'cancelled' -%}cancel
+    {%- elif trigger.id == 'button' -%}
+      {#- Only react to a real, fresh press (not a state restored at startup) -#}
+      {%- set ts = as_datetime(trigger.to_state.state, none) -%}
+      {%- set fresh = trigger.from_state is not none and ts is not none
+                      and (now() - ts).total_seconds() < 10 -%}
+      {%- set ev = trigger.to_state.attributes.get('event_type') -%}
+      {%- if not fresh -%}ignore
+      {%- elif trigger.entity_id.startswith('input_button.') or ev in start_types -%}start
+      {%- elif ev in cancel_types -%}cancel
+      {%- else -%}ignore
+      {%- endif -%}
+    {%- else -%}ignore
+    {%- endif -%}
+
+# Irrelevant events (e.g. Hue "initial_press") are filtered here, so they
+# don't restart and kill a running reminder loop.
+conditions:
+  - "{{ kind != 'ignore' }}"
+
+actions:
+  - choose:
+      # ---------------------------------------------------------------- START
+      - conditions: "{{ kind == 'start' }}"
+        sequence:
+          - variables:
+              scene_exists: >-
+                {{ states.scene | selectattr('entity_id', 'eq', scene_entity) | list | count > 0 }}
+          - if: "{{ restore_lights }}"
+            then:
+              - if: "{{ scene_exists }}"
+                then:
+                  # Restarted mid-run: put lights back first, keep original snapshot
+                  - action: scene.turn_on
+                    target:
+                      entity_id: "{{ scene_entity }}"
+                else:
+                  - action: scene.create
+                    data:
+                      scene_id: "{{ scene_id }}"
+                      snapshot_entities: "{{ light_entities }}"
+            else:
+              - if: "{{ separate_lights }}"
+                then:
+                  - action: light.turn_off
+                    target:
+                      entity_id: "{{ done_light }}"
+          - repeat:
+              for_each: "{{ all_services }}"
+              sequence:
+                - action: "{{ repeat.item }}"
+                  continue_on_error: true
+                  data:
+                    message: clear_notification
+                    data:
+                      tag: "{{ notif_tag }}"
+          - action: timer.start
+            target:
+              entity_id: "{{ timer_entity }}"
+            data:
+              duration: "{{ (states(duration_entity) | float(30) * 60) | round(0) | int }}"
+          - action: light.turn_on
+            target:
+              entity_id: "{{ cooling_light }}"
+            data:
+              rgb_color: !input cooling_color
+              brightness_pct: !input cooling_brightness
+              transition: 1
+
+      # ----------------------------------------------------------------- DONE
+      - conditions: "{{ kind == 'done' }}"
+        sequence:
+          - if: "{{ separate_lights }}"
+            then:
+              - if: "{{ restore_lights }}"
+                then:
+                  - action: scene.turn_on
+                    continue_on_error: true
+                    target:
+                      entity_id: "{{ scene_entity }}"
+                else:
+                  - action: light.turn_off
+                    target:
+                      entity_id: "{{ cooling_light }}"
+          - action: light.turn_on
+            target:
+              entity_id: "{{ done_light }}"
+            data:
+              rgb_color: !input done_color
+              brightness_pct: !input done_brightness
+              transition: 1
+          - if: "{{ done_flash }}"
+            then:
+              - delay: 2
+              - action: light.turn_on
+                continue_on_error: true
+                target:
+                  entity_id: "{{ done_light }}"
+                data:
+                  flash: long
+          - variables:
+              ready_at: "{{ now().isoformat() }}"
+          - repeat:
+              sequence:
+                - variables:
+                    # Re-evaluated every reminder, so people arriving or
+                    # leaving are picked up.
+                    targets: >-
+                      {%- set ns = namespace(always=[], home=[], persons=[]) -%}
+                      {%- for svc, who in (recipients or {}).items() -%}
+                        {%- set s = svc if svc.startswith('notify.') else 'notify.' ~ svc -%}
+                        {%- if who is none or (who | string | lower) in ['always', ''] -%}
+                          {%- set ns.always = ns.always + [s] -%}
+                        {%- else -%}
+                          {%- set ns.persons = ns.persons + [s] -%}
+                          {%- if is_state(who, 'home') -%}
+                            {%- set ns.home = ns.home + [s] -%}
+                          {%- endif -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {%- set chosen = ns.home if (ns.home | count > 0 or not nobody_home_fallback) else ns.persons -%}
+                      {{ (ns.always + chosen) | unique | list }}
+                    waited_min: >-
+                      {{ ((now() - as_datetime(ready_at)).total_seconds() / 60) | round(0) | int }}
+                - repeat:
+                    for_each: "{{ targets }}"
+                    sequence:
+                      - action: "{{ repeat.item }}"
+                        continue_on_error: true
+                        data:
+                          title: !input title
+                          message: >-
+                            {{ message_text }}{% if waited_min | int > 0 %} Ready for
+                            {{ waited_min }} min.{% endif %}
+                          data:
+                            tag: "{{ notif_tag }}"
+                            # Android
+                            priority: high
+                            ttl: 0
+                            # iOS
+                            push:
+                              interruption-level: time-sensitive
+                            actions:
+                              - action: "{{ action_done }}"
+                                title: "Took it out"
+                              - action: "{{ action_snooze }}"
+                                title: "Snooze {{ snooze_minutes | int }} min"
+                # Wait for the door, "Took it out", "Snooze", or the next reminder.
+                - wait_for_trigger:
+                    - trigger: state
+                      entity_id: !input door_sensor
+                      to: "on"
+                      for:
+                        seconds: !input door_min_open
+                      id: door
+                    - trigger: event
+                      event_type: mobile_app_notification_action
+                      event_data:
+                        action: "{{ action_done }}"
+                      id: done
+                    - trigger: event
+                      event_type: mobile_app_notification_action
+                      event_data:
+                        action: "{{ action_snooze }}"
+                      id: snooze
+                  timeout:
+                    minutes: "{{ reminder_interval }}"
+                  continue_on_timeout: true
+                - variables:
+                    first: "{{ wait.trigger.id if wait.trigger else 'timeout' }}"
+                # Snoozed: clear the notification everywhere, stay quiet for the
+                # snooze period. The door or a "Took it out" tap still ends it.
+                - if: "{{ first == 'snooze' }}"
+                  then:
+                    - repeat:
+                        for_each: "{{ all_services }}"
+                        sequence:
+                          - action: "{{ repeat.item }}"
+                            continue_on_error: true
+                            data:
+                              message: clear_notification
+                              data:
+                                tag: "{{ notif_tag }}"
+                - wait_for_trigger:
+                    - trigger: state
+                      entity_id: !input door_sensor
+                      to: "on"
+                      for:
+                        seconds: !input door_min_open
+                      id: door
+                    - trigger: event
+                      event_type: mobile_app_notification_action
+                      event_data:
+                        action: "{{ action_done }}"
+                      id: done
+                  # Only a real wait when snoozed; otherwise a 1 s pass-through.
+                  timeout:
+                    seconds: "{{ (snooze_minutes | int * 60) if first == 'snooze' else 1 }}"
+                  continue_on_timeout: true
+                - variables:
+                    second: "{{ wait.trigger.id if wait.trigger else 'timeout' }}"
+                    stop: "{{ first in ['door', 'done'] or second in ['door', 'done'] }}"
+              until:
+                - >-
+                  {{ stop
+                     or ((max_reminders | int) > 0 and repeat.index >= (max_reminders | int)) }}
+          # --- cleanup
+          - repeat:
+              for_each: "{{ all_services }}"
+              sequence:
+                - action: "{{ repeat.item }}"
+                  continue_on_error: true
+                  data:
+                    message: clear_notification
+                    data:
+                      tag: "{{ notif_tag }}"
+          - if: "{{ restore_lights }}"
+            then:
+              - if: "{{ states.scene | selectattr('entity_id', 'eq', scene_entity) | list | count > 0 }}"
+                then:
+                  - action: scene.turn_on
+                    target:
+                      entity_id: "{{ scene_entity }}"
+                    data:
+                      transition: 2
+                  - action: scene.delete
+                    continue_on_error: true
+                    target:
+                      entity_id: "{{ scene_entity }}"
+            else:
+              - action: light.turn_off
+                target:
+                  entity_id: "{{ light_entities }}"
+
+      # --------------------------------------------------------------- CANCEL
+      - conditions: "{{ kind == 'cancel' }}"
+        sequence:
+          - repeat:
+              for_each: "{{ all_services }}"
+              sequence:
+                - action: "{{ repeat.item }}"
+                  continue_on_error: true
+                  data:
+                    message: clear_notification
+                    data:
+                      tag: "{{ notif_tag }}"
+          - if: "{{ restore_lights }}"
+            then:
+              - if: "{{ states.scene | selectattr('entity_id', 'eq', scene_entity) | list | count > 0 }}"
+                then:
+                  - action: scene.turn_on
+                    target:
+                      entity_id: "{{ scene_entity }}"
+                    data:
+                      transition: 1
+                  - action: scene.delete
+                    continue_on_error: true
+                    target:
+                      entity_id: "{{ scene_entity }}"
+            else:
+              - action: light.turn_off
+                target:
+                  entity_id: "{{ light_entities }}"
+          - if: "{{ states(timer_entity) in ['active', 'paused'] }}"
+            then:
+              - action: timer.cancel
+                target:
+                  entity_id: "{{ timer_entity }}"

@@ -1,19 +1,20 @@
 blueprint:
-  name: Camera Motion Alert (Nobody Home) V3
+  name: Internal motion sensor
   description: >
-    Sends a notification with a camera snapshot when motion is detected.
+    Sends a notification when motion is detected, with a camera snapshot
+    if a camera is selected (text-only otherwise).
     By default only fires when none of the selected people are home, but
     this can be overridden with the "Always Alert" toggle.
- 
-    Prerequisites:
+
+    Prerequisites (only needed if you use a camera):
     - Add to configuration.yaml and restart HA:
- 
+
         homeassistant:
           media_dirs:
             local: /media
           allowlist_external_dirs:
             - '/media'
- 
+
     - Create the snapshots folder (Terminal/SSH):
         mkdir -p /media/snapshots
   domain: automation
@@ -25,24 +26,29 @@ blueprint:
         entity:
           domain: binary_sensor
           device_class: motion
- 
+
     camera:
-      name: Camera
-      description: The camera to take a snapshot from when motion is detected.
+      name: Camera (optional)
+      description: >
+        The camera to take a snapshot from when motion is detected.
+        Leave empty to send a text-only notification.
+      default: ""
       selector:
         entity:
           domain: camera
- 
+
     people:
       name: People
       description: >
         The alert only fires when ALL of these people are away from home.
-        Ignored if "Always Alert" is enabled.
+        Ignored if "Always Alert" is enabled. If left empty, the alert
+        always fires.
+      default: []
       selector:
         entity:
           domain: person
           multiple: true
- 
+
     always_alert:
       name: Always Alert
       description: >
@@ -51,54 +57,65 @@ blueprint:
       default: false
       selector:
         boolean: {}
- 
+
     notify_service:
       name: Notification Service
       description: >
         The name of your notify service — just the part after "notify.",
         e.g. "mobile_app_my_phone". Find yours under Developer Tools →
-        Services → search "notify".
+        Actions → search "notify".
       selector:
         text: {}
- 
+
     notification_title:
       name: Notification Title
       default: "Motion Detected"
       selector:
         text: {}
- 
+
 variables:
+  camera: !input camera
   people: !input people
   always_alert: !input always_alert
   notify_service: !input notify_service
-  snapshot_file: "/media/snapshots/motion_{{ now().strftime('%Y%m%d_%H%M%S') }}.jpg"
-  snapshot_url: "/media/local/snapshots/motion_{{ now().strftime('%Y%m%d_%H%M%S') }}.jpg"
- 
-trigger:
-  - platform: state
+  notification_title: !input notification_title
+  has_camera: "{{ camera is string and camera | length > 0 }}"
+  # One timestamp, so the saved file and the URL in the notification always match
+  stamp: "{{ now().strftime('%Y%m%d_%H%M%S') }}"
+  snapshot_file: "/media/snapshots/motion_{{ stamp }}.jpg"
+  snapshot_url: "/media/local/snapshots/motion_{{ stamp }}.jpg"
+  message: "Motion detected at {{ now().strftime('%H:%M:%S on %d %B %Y') }}."
+
+triggers:
+  - trigger: state
     entity_id: !input motion_sensor
     from: "off"
     to: "on"
- 
-condition:
+
+conditions:
   - condition: template
     value_template: >-
       {{ always_alert or (people | select('is_state', 'home') | list | count == 0) }}
- 
-action:
-  - service: camera.snapshot
-    target:
-      entity_id: !input camera
-    data:
-      filename: "{{ snapshot_file }}"
- 
-  - service: "notify.{{ notify_service }}"
-    data:
-      title: !input notification_title
-      message: "Motion detected at {{ now().strftime('%H:%M:%S on %d %B %Y') }}."
-      data:
-        image: "{{ snapshot_url }}"
- 
+
+actions:
+  - if: "{{ has_camera }}"
+    then:
+      - action: camera.snapshot
+        target:
+          entity_id: "{{ camera }}"
+        data:
+          filename: "{{ snapshot_file }}"
+      - action: "notify.{{ notify_service }}"
+        data:
+          title: "{{ notification_title }}"
+          message: "{{ message }}"
+          data:
+            image: "{{ snapshot_url }}"
+    else:
+      - action: "notify.{{ notify_service }}"
+        data:
+          title: "{{ notification_title }}"
+          message: "{{ message }}"
+
 mode: single
 max_exceeded: silent
- 

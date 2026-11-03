@@ -81,14 +81,13 @@ blueprint:
       selector:
         time: {}
 
-    notify_service:
-      name: Notification Service
-      description: >
-        The name of your notify service — just the part after "notify.",
-        e.g. "mobile_app_my_phone". Find yours under Developer Tools →
-        Actions → search "notify".
+    notify_devices:
+      name: Notify Devices
+      description: The phone(s) with the Home Assistant app that should get the alert.
       selector:
-        text: {}
+        device:
+          integration: mobile_app
+          multiple: true
 
     notification_title:
       name: Notification Title
@@ -101,7 +100,14 @@ variables:
   people: !input people
   always_alert: !input always_alert
   night_window_enabled: !input night_window_enabled
-  notify_service: !input notify_service
+  notify_devices: !input notify_devices
+  # Turn each selected phone into its notify action, e.g. notify.mobile_app_adriaans_iphone
+  notify_targets: >-
+    {% set ns = namespace(t=[]) %}
+    {% for d in notify_devices %}
+      {% set ns.t = ns.t + ['notify.mobile_app_' ~ (device_attr(d, 'name') | slugify)] %}
+    {% endfor %}
+    {{ ns.t }}
   notification_title: !input notification_title
   has_camera: "{{ camera is string and camera | length > 0 }}"
   # One timestamp, so the saved file and the URL in the notification always match
@@ -142,17 +148,17 @@ actions:
           entity_id: "{{ camera }}"
         data:
           filename: "{{ snapshot_file }}"
-      - action: "notify.{{ notify_service }}"
-        data:
-          title: "{{ notification_title }}"
-          message: "{{ message }}"
+
+  # Send to every selected phone
+  - repeat:
+      for_each: "{{ notify_targets }}"
+      sequence:
+        - action: "{{ repeat.item }}"
+          continue_on_error: true
           data:
-            image: "{{ snapshot_url }}"
-    else:
-      - action: "notify.{{ notify_service }}"
-        data:
-          title: "{{ notification_title }}"
-          message: "{{ message }}"
+            title: "{{ notification_title }}"
+            message: "{{ message }}"
+            data: "{{ {'image': snapshot_url} if has_camera else {} }}"
 
 mode: single
 max_exceeded: silent

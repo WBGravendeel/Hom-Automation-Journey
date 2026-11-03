@@ -1,0 +1,226 @@
+blueprint:
+  name: Morning Coffee
+  description: >
+    Turns a light/plug off automatically a set time after it was turned on,
+    regardless of what turned it on. The countdown runs in a timer helper
+    (with "Restore" enabled), so it survives Home Assistant restarts and
+    automation reloads.
+    Turned on inside the morning window -> morning duration, otherwise normal duration.
+    Turned on again -> countdown restarts. Turned off manually -> countdown cancelled.
+    A notification is sent a set time before the turn-off.
+    Use ONE dedicated timer helper per automation.
+  domain: automation
+  input:
+    target_light:
+      name: Light(s) / plug(s) to auto-off
+      selector:
+        entity:
+          domain:
+            - light
+          multiple: true
+
+    auto_off_timer:
+      name: Timer helper
+      description: A dedicated timer helper with "Restore" enabled.
+      selector:
+        entity:
+          domain:
+            - timer
+
+    auto_off_duration:
+      name: Normal auto-off duration
+      default:
+        hours: 1
+        minutes: 0
+        seconds: 0
+      selector:
+        duration: {}
+
+    morning_start:
+      name: Morning window start
+      default: "05:00:00"
+      selector:
+        time: {}
+
+    morning_end:
+      name: Morning window end
+      default: "10:00:00"
+      selector:
+        time: {}
+
+    morning_duration:
+      name: Morning auto-off duration
+      default:
+        hours: 2
+        minutes: 0
+        seconds: 0
+      selector:
+        duration: {}
+
+    warning_before:
+      name: Warn this long before turning off
+      default:
+        hours: 0
+        minutes: 10
+        seconds: 0
+      selector:
+        duration: {}
+
+    notify_target:
+      name: Notify target
+      selector:
+        entity:
+          filter:
+            domain: notify
+          multiple: true
+
+    notification:
+      name: Notification text
+      description: You can use {{ minutes_left }} in the text.
+      default: >-
+        {{ target_light | map('state_attr', 'friendly_name') | join(', ') }}
+        will be turned off in {{ minutes_left }} minutes.
+      selector:
+        text:
+
+# Available to the template trigger (no state access allowed here)
+trigger_variables:
+  timer_entity: !input auto_off_timer
+  warn_input: !input warning_before
+
+triggers:
+  - trigger: state
+    entity_id: !input target_light
+    from: "off"
+    to: "on"
+    id: turned_on
+  - trigger: state
+    entity_id: !input target_light
+    to: "off"
+    id: turned_off
+  - trigger: template
+    id: warning
+    value_template: >-
+      {% set warn_s = (warn_input.hours | default(0) | int) * 3600
+                    + (warn_input.minutes | default(0) | int) * 60
+                    + (warn_input.seconds | default(0) | int) %}
+      {{ is_state(timer_entity, 'active')
+         and (as_timestamp(state_attr(timer_entity, 'finishes_at'), 0)
+              - as_timestamp(now())) <= warn_s }}
+  - trigger: event
+    event_type: timer.finished
+    event_data:
+      entity_id: !input auto_off_timer
+    id: finished
+  - trigger: homeassistant
+    event: start
+    id: startup
+
+variables:
+  target_light: !input target_light
+  timer_entity: !input auto_off_timer
+  auto_off_duration: !input auto_off_duration
+  morning_duration: !input morning_duration
+  warning_before: !input warning_before
+  morning_start: !input morning_start
+  morning_end: !input morning_end
+
+  normal_seconds: >-
+    {{ (auto_off_duration.hours | default(0) | int) * 3600
+       + (auto_off_duration.minutes | default(0) | int) * 60
+       + (auto_off_duration.seconds | default(0) | int) }}
+  morning_seconds: >-
+    {{ (morning_duration.hours | default(0) | int) * 3600
+       + (morning_duration.minutes | default(0) | int) * 60
+       + (morning_duration.seconds | default(0) | int) }}
+  warn_seconds: >-
+    {{ (warning_before.hours | default(0) | int) * 3600
+       + (warning_before.minutes | default(0) | int) * 60
+       + (warning_before.seconds | default(0) | int) }}
+
+  is_morning: >-
+    {% set t = now().strftime('%H:%M:%S') %}
+    {{ morning_start <= t < morning_end }}
+  total_seconds: "{{ morning_seconds if is_morning else normal_seconds }}"
+
+  lights_on: "{{ target_light | select('is_state', 'on') | list }}"
+  minutes_left: >-
+    {% if is_state(timer_entity, 'active') %}
+      {{ ((as_timestamp(state_attr(timer_entity, 'finishes_at'), 0)
+           - as_timestamp(now())) / 60) | round(0) | int }}
+    {% else %}
+      {{ (warn_seconds | int / 60) | round(0) | int }}
+    {% endif %}
+  notification: !input notification
+
+actions:
+  - choose:
+      # Turned on -> (re)start countdown with morning or normal duration
+      - conditions:
+          - condition: trigger
+            id: turned_on
+        sequence:
+          - action: timer.start
+            target:
+              entity_id: "{{ timer_entity }}"
+            data:
+              duration: "{{ total_seconds | int | timestamp_custom('%H:%M:%S', false) }}"
+
+      # Turned off manually -> cancel countdown once everything is off
+      - conditions:
+          - condition: trigger
+            id: turned_off
+          - condition: template
+            value_template: "{{ lights_on | count == 0 }}"
+        sequence:
+          - action: timer.cancel
+            target:
+              entity_id: "{{ timer_entity }}"
+
+      # Warning window reached
+      - conditions:
+          - condition: trigger
+            id: warning
+          - condition: template
+            value_template: "{{ lights_on | count > 0 }}"
+        sequence:
+          - action: notify.send_message
+            target:
+              entity_id: !input notify_target
+            data:
+              title: "Automated turn-off"
+              message: "{{ notification }}"
+
+      # Timer finished -> turn off whatever is still on
+      - conditions:
+          - condition: trigger
+            id: finished
+          - condition: template
+            value_template: "{{ lights_on | count > 0 }}"
+        sequence:
+          - action: light.turn_off
+            target:
+              entity_id: "{{ lights_on }}"
+
+      # Safety net after a restart: device is on but no countdown running
+      # (e.g. the timer expired while HA was down and the finished event was missed)
+      - conditions:
+          - condition: trigger
+            id: startup
+          - condition: template
+            value_template: "{{ lights_on | count > 0 and not is_state(timer_entity, 'active') }}"
+        sequence:
+          - action: timer.start
+            target:
+              entity_id: "{{ timer_entity }}"
+            data:
+              duration: "{{ warn_seconds | int | timestamp_custom('%H:%M:%S', false) }}"
+          - action: notify.send_message
+            target:
+              entity_id: !input notify_target
+            data:
+              title: "Automated turn-off"
+              message: "{{ notification }}"
+
+mode: queued
+max: 10
